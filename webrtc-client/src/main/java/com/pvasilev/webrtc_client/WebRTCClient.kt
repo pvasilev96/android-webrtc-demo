@@ -3,16 +3,18 @@ package com.pvasilev.webrtc_client
 import android.content.Context
 import org.webrtc.*
 
-class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>, private val events: PeerConnectionEvents) {
+class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
     private val factory: PeerConnectionFactory
-
-    private val peerConnection: PeerConnection?
-
-    private val sdpMediaConstraints: MediaConstraints
 
     private val pcObserver: PeerConnection.Observer = PCObserver()
 
     private val sdpObserver: SdpObserver = SDPObserver()
+
+    private val sdpMediaConstraints: MediaConstraints
+
+    private var peerConnection: PeerConnection? = null
+
+    private var queuedRemoteCandidates: MutableList<IceCandidate>? = mutableListOf()
 
     private var isInitiator: Boolean = false
 
@@ -23,12 +25,16 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>,
         )
         factory = PeerConnectionFactory.builder()
                 .createPeerConnectionFactory()
-        peerConnection = factory.createPeerConnection(iceServers, pcObserver)
-        peerConnection?.addTrack(createVideoTrack())
-        peerConnection?.addTrack(createAudioTrack())
         sdpMediaConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+        }
+    }
+
+    fun createPeerConnection(iceServers: List<PeerConnection.IceServer>) {
+        peerConnection = factory.createPeerConnection(iceServers, pcObserver)?.apply {
+            addTrack(createVideoTrack())
+            addTrack(createAudioTrack())
         }
     }
 
@@ -38,11 +44,20 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>,
     }
 
     fun createAnswer() {
+        if (isInitiator) throw IllegalStateException("caller must receive remote answer")
         peerConnection?.createAnswer(sdpObserver, sdpMediaConstraints)
     }
 
     fun setRemoteDescription(sdp: SessionDescription) {
         peerConnection?.setRemoteDescription(sdpObserver, sdp)
+    }
+
+    fun addRemoteCandidate(iceCandidate: IceCandidate) {
+        if (queuedRemoteCandidates != null) {
+            queuedRemoteCandidates?.add(iceCandidate)
+        } else {
+            peerConnection?.addIceCandidate(iceCandidate)
+        }
     }
 
     private fun createVideoTrack(): VideoTrack {
@@ -55,6 +70,10 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>,
     }
 
     private fun drainCandidates() {
+        if (queuedRemoteCandidates != null) {
+            queuedRemoteCandidates!!.forEach { peerConnection?.addIceCandidate(it) }
+            queuedRemoteCandidates = null
+        }
     }
 
     inner class PCObserver : PeerConnection.Observer {
@@ -117,7 +136,7 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>,
                 }
             } else {
                 if (peerConnection?.localDescription != null) {
-                    events.onLocalDescription(peerConnection.localDescription)
+                    events.onLocalDescription(peerConnection!!.localDescription)
                     drainCandidates()
                 }
             }
