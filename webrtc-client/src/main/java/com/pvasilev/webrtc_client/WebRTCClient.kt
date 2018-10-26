@@ -3,7 +3,7 @@ package com.pvasilev.webrtc_client
 import android.content.Context
 import org.webrtc.*
 
-class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>) {
+class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>, private val events: PeerConnectionEvents) {
     private val factory: PeerConnectionFactory
 
     private val peerConnection: PeerConnection?
@@ -13,6 +13,8 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>)
     private val pcObserver: PeerConnection.Observer = PCObserver()
 
     private val sdpObserver: SdpObserver = SDPObserver()
+
+    private var isInitiator: Boolean = false
 
     init {
         PeerConnectionFactory.initialize(
@@ -31,11 +33,16 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>)
     }
 
     fun createOffer() {
+        isInitiator = true
         peerConnection?.createOffer(sdpObserver, sdpMediaConstraints)
     }
 
     fun createAnswer() {
         peerConnection?.createAnswer(sdpObserver, sdpMediaConstraints)
+    }
+
+    fun setRemoteDescription(sdp: SessionDescription) {
+        peerConnection?.setRemoteDescription(sdpObserver, sdp)
     }
 
     private fun createVideoTrack(): VideoTrack {
@@ -47,8 +54,12 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>)
         return factory.createAudioTrack(AUDIO_TRACK_ID, audioSource)
     }
 
+    private fun drainCandidates() {
+    }
+
     inner class PCObserver : PeerConnection.Observer {
-        override fun onIceCandidate(iceCandidate: IceCandidate?) {
+        override fun onIceCandidate(iceCandidate: IceCandidate) {
+            events.onIceCandidate(iceCandidate)
         }
 
         override fun onDataChannel(dataChannel: DataChannel) {
@@ -57,7 +68,14 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>)
         override fun onIceConnectionReceivingChange(receiving: Boolean) {
         }
 
-        override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
+        override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
+            when (newState) {
+                PeerConnection.IceConnectionState.CONNECTED -> events.onIceConnected()
+                PeerConnection.IceConnectionState.FAILED -> events.onIceFailed()
+                PeerConnection.IceConnectionState.DISCONNECTED -> events.onIceDisconnected()
+                else -> {
+                }
+            }
         }
 
         override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState?) {
@@ -83,13 +101,26 @@ class WebRTCClient(context: Context, iceServers: List<PeerConnection.IceServer>)
     }
 
     inner class SDPObserver : SdpObserver {
-        override fun onCreateSuccess(origSdp: SessionDescription?) {
+        override fun onCreateSuccess(sdp: SessionDescription) {
+            peerConnection?.setLocalDescription(sdpObserver, sdp)
         }
 
         override fun onCreateFailure(error: String?) {
         }
 
         override fun onSetSuccess() {
+            if (isInitiator) {
+                if (peerConnection?.remoteDescription == null) {
+                    events.onLocalDescription(peerConnection!!.localDescription)
+                } else {
+                    drainCandidates()
+                }
+            } else {
+                if (peerConnection?.localDescription != null) {
+                    events.onLocalDescription(peerConnection.localDescription)
+                    drainCandidates()
+                }
+            }
         }
 
         override fun onSetFailure(error: String?) {
