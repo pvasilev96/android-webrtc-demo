@@ -3,16 +3,22 @@ package com.pvasilev.webrtc_client
 import android.content.Context
 import org.webrtc.*
 
-class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
+class WebRTCClient(private val context: Context, private val eglBase: EglBase, private val events: PeerConnectionEvents) {
     private val factory: PeerConnectionFactory
 
-    private val pcObserver: PeerConnection.Observer = PCObserver()
+    private val pcObserver: PeerConnection.Observer
 
-    private val sdpObserver: SdpObserver = SDPObserver()
+    private val sdpObserver: SdpObserver
 
     private val sdpMediaConstraints: MediaConstraints
 
     private var peerConnection: PeerConnection? = null
+
+    private var videoCapturer: VideoCapturer? = null
+
+    private var localSink: VideoSink? = null
+
+    private var remoteSink: VideoSink? = null
 
     private var queuedRemoteCandidates: MutableList<IceCandidate>? = mutableListOf()
 
@@ -25,15 +31,20 @@ class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
         )
         factory = PeerConnectionFactory.builder()
                 .createPeerConnectionFactory()
+        pcObserver = PCObserver()
+        sdpObserver = SDPObserver()
         sdpMediaConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
         }
     }
 
-    fun createPeerConnection(iceServers: List<PeerConnection.IceServer>) {
+    fun createPeerConnection(localSink: VideoSink?, remoteSink: VideoSink?, videoCapturer: VideoCapturer, iceServers: List<PeerConnection.IceServer>) {
+        this.localSink = localSink
+        this.remoteSink = remoteSink
+        this.videoCapturer = videoCapturer
         peerConnection = factory.createPeerConnection(iceServers, pcObserver)?.apply {
-            addTrack(createVideoTrack())
+            addTrack(createVideoTrack(videoCapturer))
             addTrack(createAudioTrack())
         }
     }
@@ -60,8 +71,14 @@ class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
         }
     }
 
-    private fun createVideoTrack(): VideoTrack {
-        TODO("not implemented yet")
+    private fun createVideoTrack(videoCapturer: VideoCapturer): VideoTrack {
+        val videoSource = factory.createVideoSource(videoCapturer.isScreencast)
+        val videoTrack = factory.createVideoTrack(VIDEO_TRACK_ID, videoSource)
+        val surfaceTextureHelper = SurfaceTextureHelper.create(CAPTURE_THREAD_NAME, eglBase.eglBaseContext)
+        videoCapturer.initialize(surfaceTextureHelper, context, videoSource.capturerObserver)
+        videoCapturer.startCapture(WIDTH, HEIGHT, FPS)
+        videoTrack.addSink(localSink)
+        return videoTrack
     }
 
     private fun createAudioTrack(): AudioTrack {
@@ -76,7 +93,7 @@ class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
         }
     }
 
-    inner class PCObserver : PeerConnection.Observer {
+    private inner class PCObserver : PeerConnection.Observer {
         override fun onIceCandidate(iceCandidate: IceCandidate) {
             events.onIceCandidate(iceCandidate)
         }
@@ -119,7 +136,7 @@ class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
         }
     }
 
-    inner class SDPObserver : SdpObserver {
+    private inner class SDPObserver : SdpObserver {
         override fun onCreateSuccess(sdp: SessionDescription) {
             peerConnection?.setLocalDescription(sdpObserver, sdp)
         }
@@ -147,7 +164,11 @@ class WebRTCClient(context: Context, private val events: PeerConnectionEvents) {
     }
 
     companion object {
-        const val VIDEO_TRACK_ID = "ARDAMSv0"
-        const val AUDIO_TRACK_ID = "ARDAMSa0"
+        private const val VIDEO_TRACK_ID = "ARDAMSv0"
+        private const val AUDIO_TRACK_ID = "ARDAMSa0"
+        private const val CAPTURE_THREAD_NAME = "CaptureThread"
+        private const val WIDTH = 1280
+        private const val HEIGHT = 720
+        private const val FPS = 30 * 1000
     }
 }
